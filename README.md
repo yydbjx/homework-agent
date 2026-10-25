@@ -12,6 +12,9 @@
 | --- | --- |
 | `agent.py` | 主程序：对话循环、工具调用调度、多轮记忆 |
 | `tools.py` | 工具集：6 个工具函数 + 告诉大模型的 JSON Schema |
+| `todo_mcp_server.py` | MCP Server（FastMCP）：把 6 个工具按标准协议暴露 |
+| `mcp_client.py` | MCP Client：stdio 连接、tools/list 发现、tools/call 调用 |
+| `mcp_selftest.py` | MCP 链路自测：不依赖大模型 Key |
 | `web_ui.py` | 网页界面（Gradio）：聊天窗口 + 快捷指令按钮 |
 | `test_tools.py` | 自测脚本：无需 API Key 验证工具行为 |
 | `todo.json` | 待办数据文件（运行后自动生成） |

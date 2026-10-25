@@ -2,7 +2,9 @@
 agent.py —— 能说会做的智能体（主程序）
 
 "会说"：调用大模型 API 进行多轮对话；
-"会做"：通过 Function Calling（工具调用）执行真实动作。
+"会做"：通过工具调用执行真实动作，两种模式可切换：
+    MCP=1        通过 MCP 协议调用（本模块 -> MCP Client -> MCP Server -> tools.py）
+    未设置       进程内直接调用 tools.py（Function Calling 直连模式，便于对照原理）
 
 使用前配置（任选一家 OpenAI 兼容接口即可，如 DeepSeek / 智谱 / Kimi / 通义）：
     export LLM_API_KEY="你的 API Key"
@@ -19,12 +21,15 @@ import sys
 
 from openai import OpenAI
 
+import mcp_client
 import tools
 
 # ---------------- 配置 ----------------
 API_KEY = os.environ.get("LLM_API_KEY", "")
 BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
 MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+USE_MCP = os.environ.get("MCP", "") == "1"      # 是否走 MCP 协议调用工具
+_mcp: "mcp_client.McpToolClient | None" = None
 
 SYSTEM_PROMPT = (
     "你是课程作业《构建一个能说会做的智能体》中的助手小智。"
@@ -45,18 +50,32 @@ def create_client():
     return OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 
+def get_mcp_client() -> "mcp_client.McpToolClient":
+    """懒加载 MCP Client（第一次用到时才拉起 Server 进程）。"""
+    global _mcp
+    if _mcp is None:
+        _mcp = mcp_client.McpToolClient()
+    return _mcp
+
+
+def get_tools_schema() -> list:
+    """取工具清单：MCP 模式由 tools/list 动态发现，直连模式用本地 JSON Schema。"""
+    return get_mcp_client().list_tools() if USE_MCP else tools.TOOLS_SCHEMA
+
+
 def run_tool_call(tool_call, verbose: bool = True) -> dict:
     """执行一次工具调用，返回符合协议的 tool 消息。"""
     name = tool_call.function.name
     args = json.loads(tool_call.function.arguments or "{}")
-    func = tools.TOOL_FUNCTIONS.get(name)
-    if func is None:
-        result = f"未知工具：{name}"
-    else:
-        try:
-            result = str(func(**args))
-        except Exception as e:
-            result = f"工具执行出错：{e}"
+    try:
+        if USE_MCP:
+            # MCP 模式：tools/call 经 JSON-RPC 交给 Server 进程执行
+            result = get_mcp_client().call_tool(name, args)
+        else:
+            func = tools.TOOL_FUNCTIONS.get(name)
+            result = f"未知工具：{name}" if func is None else str(func(**args))
+    except Exception as e:
+        result = f"工具执行出错：{e}"
     if verbose:
         print(f"    🔧 [调用工具] {name}({args}) -> {result.splitlines()[0]}")
     return {"role": "tool", "tool_call_id": tool_call.id, "content": result}
@@ -67,7 +86,7 @@ def chat_once(client, messages: list, verbose: bool = True) -> str:
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        tools=tools.TOOLS_SCHEMA,
+        tools=get_tools_schema(),
     )
     msg = resp.choices[0].message
 
@@ -98,7 +117,9 @@ def main():
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     print("=" * 56)
-    print("  小智 · 能说会做的智能体（输入 exit 退出，输入 clear 清空记忆）")
+    mode = "MCP 协议" if USE_MCP else "Function Calling 直连"
+    print(f"  小智 · 能说会做的智能体｜工具调用模式：{mode}")
+    print("  （输入 exit 退出，输入 clear 清空记忆）")
     print("=" * 56)
     while True:
         try:
